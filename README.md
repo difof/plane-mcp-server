@@ -151,6 +151,27 @@ parameters, so the catalogue is self-documenting at call time.
 
 **→ [Full tool and action reference](plane_mcp/tools/README.md)**
 
+### Agent skill (repo-owned)
+
+Load the [Plane MCP skill](.agents/skills/plane/SKILL.md) when operating Plane
+through an agent. It covers Code Mode discovery, work items, estimates,
+pages/wiki, collections, and v1/v2 REST operations. Like the
+[Mattermost MCP skill](https://github.com/difof/mattermost-mcp/tree/main/.agents/skills/mattermost-mcp),
+it lives with its MCP implementation so the guidance stays versioned.
+
+Install it globally on Oven/OpenCode **from this checkout** (the skill ID stays
+`plane` to preserve existing prompts):
+
+```bash
+mkdir -p ~/.config/opencode/skills
+ln -s "$PWD/.agents/skills/plane" ~/.config/opencode/skills/plane
+```
+
+Replace an existing `plane` skill symlink only after checking its target; do not
+overwrite a directory. For OpenCode the MCP still needs to be installed and
+configured separately. No secrets are stored in the repo or skill.
+
+
 ### Querying work items
 
 List, count and search accept **PQL**, Plane's query language:
