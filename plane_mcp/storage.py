@@ -31,6 +31,7 @@ from urllib.parse import urlparse, urlunparse
 from fastmcp.utilities.logging import get_logger
 from key_value.aio.stores.memory import MemoryStore
 from key_value.aio.stores.redis import RedisStore
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
 logger = get_logger(__name__)
 
@@ -144,11 +145,36 @@ def _ping_redis(
     logger.info("Redis connection verified (PING succeeded)")
 
 
+def _encrypted_redis_store(store: RedisStore) -> FernetEncryptionWrapper:
+    """Encrypt hosted OAuth secrets at rest; accept old keys for rotation.
+
+    A persistent cache with plaintext refresh tokens is worse than refusing
+    startup. Operators must keep the first key stable across restarts and
+    supply older keys after a rotation until existing tokens are reissued.
+    """
+    from cryptography.fernet import Fernet, MultiFernet
+
+    raw = os.getenv("PLANE_OAUTH_STORE_ENCRYPTION_KEYS", "")
+    keys = [value.strip() for value in raw.split(",") if value.strip()]
+    if not keys:
+        raise RuntimeError(
+            "Persistent OAuth token storage requires PLANE_OAUTH_STORE_ENCRYPTION_KEYS "
+            "(comma-separated Fernet keys; first key encrypts). Refusing to persist plaintext tokens."
+        )
+    try:
+        fernet = MultiFernet([Fernet(key.encode("ascii")) for key in keys])
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise RuntimeError("Invalid PLANE_OAUTH_STORE_ENCRYPTION_KEYS; expected Fernet keys") from exc
+    logger.info("OAuth token store: Fernet encryption enabled (key count=%d)", len(keys))
+    # Plaintext legacy records remain readable for migration; all new writes
+    # are encrypted. Old encrypted data needs the old key in the key list.
+    return FernetEncryptionWrapper(key_value=store, fernet=fernet, raise_on_decryption_error=False)
+
+
 def build_token_store() -> Any:
     """Select and build the OAuth token store from environment variables.
 
-    See the module docstring for the selection priority. The returned object
-    is handed verbatim to ``PlaneOAuthProvider`` as ``client_storage``.
+    Persistent Redis stores are wrapped in Fernet encryption before being passed to the OAuth provider.
     """
     redis_url = os.getenv("REDIS_URL")
     redis_host = os.getenv("REDIS_HOST")
@@ -177,7 +203,7 @@ def build_token_store() -> Any:
         )
         store = RedisStore(client=async_client)
         logger.info("Token store: Redis (url=%s)", _redact_url(redis_url))
-        return store
+        return _encrypted_redis_store(store)
 
     # 2. Static-password Redis
     if password:
@@ -199,7 +225,7 @@ def build_token_store() -> Any:
             redis_port,
             use_ssl,
         )
-        return store
+        return _encrypted_redis_store(store)
 
     # 3. ElastiCache + Secrets Manager
     if secret_arn and _has_aws_credentials():
@@ -239,7 +265,7 @@ def build_token_store() -> Any:
             use_ssl,
             region,
         )
-        return store
+        return _encrypted_redis_store(store)
 
     if secret_arn:
         logger.warning(
@@ -254,7 +280,7 @@ def build_token_store() -> Any:
         _ping_redis(redis_host, int(redis_port), ssl=use_ssl)
         store = RedisStore(client=_redis_client(redis_host, int(redis_port), ssl=use_ssl))
         logger.info("Token store: Redis (auth=none, host=%s, port=%s, ssl=%s)", redis_host, redis_port, use_ssl)
-        return store
+        return _encrypted_redis_store(store)
 
     # 5. In-memory fallback
     logger.warning(
