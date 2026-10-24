@@ -8,9 +8,10 @@ as estimate_point.
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Any, Literal
 
 from fastmcp import FastMCP
+from plane.errors.errors import HttpError
 from plane.models.estimates import (
     CreateEstimate,
     CreateEstimatePoint,
@@ -20,6 +21,7 @@ from plane.models.estimates import (
     UpdateEstimatePoint,
 )
 from plane.models.projects import Project
+from plane.models.query_params import WorkItemQueryParams
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.toolkit import Action, build_annotations, build_description, missing, one_of, opt
@@ -54,7 +56,8 @@ FOOTER = (
     f'type is one of: {", ".join(TYPES)}. A point\'s `value` is its display label ("5", "XL") and '
     'its `key` is the sort order. points takes a JSON array such as [{"value": "1", "key": 0}]. '
     "To set a work item's estimate: retrieve to get the estimate_id, list_points to see the "
-    "available values, then pass the chosen point's id to `workitem update` as estimate_point."
+    "available values, then pass the chosen point's id to `workitem update` as estimate_point. "
+    "On older self-hosted Plane, 404s return observed (possibly incomplete) point values."
 )
 
 LEGACY = {
@@ -68,6 +71,57 @@ LEGACY = {
     "update_project_estimate_point": "update_point",
     "delete_project_estimate_point": "delete_point",
 }
+
+
+def _observed_points(client: Any, workspace_slug: str, project_id: str, estimate_id: str) -> dict[str, Any]:
+    """Find *used* point values when an older Plane lacks the estimates API.
+
+    The work-item API can expand an assigned estimate_point even if Plane's
+    public estimate endpoints 404. Unassigned values cannot be discovered by
+    this route, so never present the results as the complete scale.
+    """
+    project = client.projects.retrieve(workspace_slug=workspace_slug, project_id=project_id)
+    if getattr(project, "estimate", None) != estimate_id:
+        return {"error": "Estimate is not active on this project; cannot discover its points from work items."}
+
+    found: dict[str, dict[str, Any]] = {}
+    cursor = ""
+    scanned = 0
+    truncated = False
+    for _ in range(5):
+        page = client.work_items.list(
+            workspace_slug=workspace_slug,
+            project_id=project_id,
+            params=WorkItemQueryParams(per_page=100, cursor=opt(cursor), expand="estimate_point"),
+        )
+        for item in page.results:
+            scanned += 1
+            detail = getattr(item, "estimate_point_expanded", None)
+            if not isinstance(detail, dict) or not isinstance(detail.get("id"), str):
+                continue
+            if detail.get("estimate") not in (None, estimate_id):
+                continue
+            found[detail["id"]] = {name: detail.get(name) for name in ("id", "value", "key")}
+        if not page.next_page_results:
+            break
+        cursor = page.next_cursor
+        if not cursor:
+            truncated = True
+            break
+    else:
+        truncated = True
+
+    return {
+        "estimate_id": estimate_id,
+        "points": sorted(found.values(), key=lambda point: (point["key"] is None, point["key"] or 0)),
+        "complete": False,
+        "source": "observed_workitems",
+        "scanned_workitems": scanned,
+        "truncated": truncated,
+        "warning": (
+            "The public estimates endpoint returned 404. Only assigned points were observed; unused values are unknown."
+        ),
+    }
 
 
 def register(mcp: FastMCP) -> None:
@@ -101,7 +155,7 @@ def register(mcp: FastMCP) -> None:
         last_used: bool | None = None,
         external_source: str = "",
         external_id: str = "",
-    ) -> Estimate | EstimatePoint | list[EstimatePoint] | Project | str | None:
+    ) -> Estimate | EstimatePoint | list[EstimatePoint] | Project | dict[str, Any] | str | None:
         client, workspace_slug = get_plane_client_context()
 
         if not project_id:
@@ -112,7 +166,18 @@ def register(mcp: FastMCP) -> None:
         estimates = client.estimates
 
         if action == "retrieve":
-            return estimates.retrieve(workspace_slug=workspace_slug, project_id=project_id)
+            try:
+                return estimates.retrieve(workspace_slug=workspace_slug, project_id=project_id)
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                project = client.projects.retrieve(workspace_slug=workspace_slug, project_id=project_id)
+                return {
+                    "estimate_id": getattr(project, "estimate", None),
+                    "complete": False,
+                    "warning": "The public estimates endpoint returned 404 on this Plane instance. "
+                    "Only the project's active estimate ID is available.",
+                }
 
         if action == "create":
             if not name:
@@ -155,7 +220,14 @@ def register(mcp: FastMCP) -> None:
             )
 
         if action == "list_points":
-            return estimates.list_points(workspace_slug=workspace_slug, project_id=project_id, estimate_id=estimate_id)
+            try:
+                return estimates.list_points(
+                    workspace_slug=workspace_slug, project_id=project_id, estimate_id=estimate_id
+                )
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                return _observed_points(client, workspace_slug, project_id, estimate_id)
 
         if action == "create_points":
             try:
