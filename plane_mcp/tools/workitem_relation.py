@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Literal, get_args
 
 from fastmcp import FastMCP
+from plane.errors.errors import HttpError
 from plane.models.work_item_relation_definitions import (
     CreateWorkItemRelationDefinition,
     PaginatedWorkItemRelationDefinitionResponse,
@@ -33,6 +34,7 @@ from plane_mcp.toolkit import (
     one_of,
     opt,
 )
+from plane_mcp.tools.relations_compat import legacy_relations
 
 NAME = "workitem_relation"
 TITLE = "Work item relations"
@@ -140,12 +142,18 @@ def register(mcp: FastMCP) -> None:
         client, workspace_slug = get_plane_client_context()
 
         if action == "list_definitions":
-            return {
-                "built_in_dependencies": list(DEPENDENCY_TYPES),
-                "custom_definitions": [
-                    d.model_dump() for d in _all_definitions(client, workspace_slug, is_default, is_active)
-                ],
-            }
+            try:
+                definitions = [d.model_dump() for d in _all_definitions(client, workspace_slug, is_default, is_active)]
+                return {"built_in_dependencies": list(DEPENDENCY_TYPES), "custom_definitions": definitions}
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                return {
+                    "built_in_dependencies": list(DEPENDENCY_TYPES),
+                    "custom_definitions": [],
+                    "custom_available": False,
+                    "warning": "This Plane server lacks custom relation definitions; use a built-in relation_type.",
+                }
 
         if action == "create_definition":
             if not name:
@@ -183,12 +191,29 @@ def register(mcp: FastMCP) -> None:
             return error
 
         if action == "list":
-            dependencies = client.work_items.dependencies.list(
-                workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
-            )
-            custom = client.work_items.custom_relations.list(
-                workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
-            )
+            try:
+                dependencies = client.work_items.dependencies.list(
+                    workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
+                )
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                response = legacy_relations(client, workspace_slug, project_id, workitem_id, "GET")
+                if not response["ok"]:
+                    return response
+                return {"dependencies": response["data"], "custom": {}, "source": "legacy_relations"}
+            try:
+                custom = client.work_items.custom_relations.list(
+                    workspace_slug=workspace_slug, project_id=project_id, work_item_id=workitem_id
+                )
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                return {
+                    "dependencies": dependencies.model_dump(),
+                    "custom": {},
+                    "warning": "Custom relations API unavailable on this server.",
+                }
             return {
                 "dependencies": dependencies.model_dump(),
                 "custom": {label: [item.model_dump() for item in items] for label, items in custom.items()},
@@ -201,15 +226,28 @@ def register(mcp: FastMCP) -> None:
             if relation_type:
                 if error := one_of("relation_type", relation_type, DEPENDENCY_TYPES, _OTHER_RELATIONS):
                     return error
-                return client.work_items.dependencies.create(
-                    workspace_slug=workspace_slug,
-                    project_id=project_id,
-                    work_item_id=workitem_id,
-                    data=CreateWorkItemDependency(
-                        relation_type=relation_type,  # type: ignore[arg-type]
-                        work_item_ids=targets,
-                    ),
-                )
+                try:
+                    return client.work_items.dependencies.create(
+                        workspace_slug=workspace_slug,
+                        project_id=project_id,
+                        work_item_id=workitem_id,
+                        data=CreateWorkItemDependency(
+                            relation_type=relation_type,  # type: ignore[arg-type]
+                            work_item_ids=targets,
+                        ),
+                    )
+                except HttpError as exc:
+                    if exc.status_code != 404:
+                        raise
+                    return legacy_relations(
+                        client,
+                        workspace_slug,
+                        project_id,
+                        workitem_id,
+                        "POST",
+                        relation_type=relation_type,
+                        workitem_ids=targets,
+                    )
             if relation_definition_id and relation_definition_label:
                 return client.work_items.custom_relations.create(
                     workspace_slug=workspace_slug,
@@ -230,10 +268,18 @@ def register(mcp: FastMCP) -> None:
         if not related_workitem_id:
             return missing(action, "related_workitem_id")
         remove = client.work_items.dependencies.remove if is_dependency else client.work_items.custom_relations.remove
-        remove(
-            workspace_slug=workspace_slug,
-            project_id=project_id,
-            work_item_id=workitem_id,
-            related_work_item_id=related_workitem_id,
-        )
+        try:
+            remove(
+                workspace_slug=workspace_slug,
+                project_id=project_id,
+                work_item_id=workitem_id,
+                related_work_item_id=related_workitem_id,
+            )
+        except HttpError as exc:
+            if exc.status_code != 404:
+                raise
+            return (
+                "Error: this Plane server does not expose the public relation-removal route. "
+                "No relation was removed. Use a supported API or Plane UI."
+            )
         return None
