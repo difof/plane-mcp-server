@@ -179,10 +179,15 @@ def _invoke(tool: str, arguments: dict, module: str | None = None):
 
     recorder = _Recorder()
     restore = None
+    guard_restore = None
     if module:
         target = importlib.import_module(module)
         restore = (target, target.get_plane_client_context)
         target.get_plane_client_context = lambda: (recorder, "acme")
+        if module == WORK_ITEM_MODULE:
+            # Test schema coercion only; the membership guard has its own tests.
+            guard_restore = target.validate_assignables
+            target.validate_assignables = lambda *args: None
 
     async def run():
         async with Client(server_module.get_stdio_mcp()) as client:
@@ -196,6 +201,8 @@ def _invoke(tool: str, arguments: dict, module: str | None = None):
     finally:
         if restore:
             restore[0].get_plane_client_context = restore[1]
+            if guard_restore:
+                restore[0].validate_assignables = guard_restore
     return error, recorder.kwargs
 
 
