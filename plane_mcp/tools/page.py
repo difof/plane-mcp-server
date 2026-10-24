@@ -17,6 +17,7 @@ from plane.models.work_item_pages import CreateWorkItemPage, WorkItemPage
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.toolkit import Action, as_params, build_annotations, build_description, envelope, missing, needs, opt
+from plane_mcp.tools.page_v1_compat import create_nested_project_page, update_project_page
 from plane_mcp.tools.page_v2 import run as run_v2
 
 NAME = "page"
@@ -214,13 +215,10 @@ def register(mcp: FastMCP) -> None:
                 return None
             if not (name or description_html):
                 return missing(action, "name or description_html")
-            updater = client.pages.update_project_page if project_id else client.pages.update_workspace_page
-            return updater(
-                workspace_slug=workspace_slug,
-                page_id=page_id,
-                **scope,
-                data=UpdatePage(name=opt(name), description_html=opt(description_html)),
-            )
+            data = UpdatePage(name=opt(name), description_html=opt(description_html))
+            if project_id:
+                return update_project_page(client, workspace_slug, project_id, page_id, data)
+            return client.pages.update_workspace_page(workspace_slug=workspace_slug, page_id=page_id, data=data)
 
         if action == "create":
             if error := needs(action, name=name, description_html=description_html):
@@ -241,6 +239,8 @@ def register(mcp: FastMCP) -> None:
                 external_source=opt(external_source),
             )
             if project_id:
+                if parent_id:
+                    return create_nested_project_page(client, workspace_slug, project_id, data)
                 return client.pages.create_project_page(workspace_slug=workspace_slug, project_id=project_id, data=data)
             return client.pages.create_workspace_page(workspace_slug=workspace_slug, data=data)
 
