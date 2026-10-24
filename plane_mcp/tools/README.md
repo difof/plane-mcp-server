@@ -91,6 +91,7 @@ Where the workspace owns a resource outright, both directions of wrong-scope wri
 
 | Tool | Actions |
 |---|---|
+| `api` | `list` · `describe` · `request` (documented REST routes and authenticated fallback) |
 | `collection` | `list` · `retrieve` · `create` · `update` · `delete` · `list_pages` · `search_pages` · `add_pages` · `remove_page` · `list_members` · `add_member` · `update_member` · `remove_member` |
 | `customer` | `list` · `retrieve` · `create` · `update` · `delete` · `list_workitems` · `manage_workitems` |
 | `customer_property` | `list` · `retrieve` · `create` · `update` · `delete` · `get_values` · `set_values` |
