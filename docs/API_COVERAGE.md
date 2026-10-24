@@ -19,6 +19,33 @@ The gateway supports **GET, POST, PUT, PATCH and DELETE** for any `/api/v1/` or 
 - The catalogue covers published **REST endpoints** only, not undocumented internal application APIs, arbitrary external signed-upload destinations, WebSockets or GraphQL. Endpoints which require a feature plan, permissions or an upgraded Plane server remain subject to those limits.
 - Upstream `plane-sdk` 0.3.1 is still used for v1 typed tools. The raw v2 gateway is deliberately not forced through v1 Pydantic response models, because v2 changes verbs, pagination and field naming.
 
+## Self-hosted v1.4.2 Pages backend compatibility
+
+Plane Community v1.4.2 serves Pages in its internal UI API but does not
+register token-authenticated public Pages endpoints. The fork includes a
+**separately licensed, optional backend patch**, tested to apply cleanly to
+Plane tag `v1.4.2`: [`compat/plane-v1.4.2/README.md`](../compat/plane-v1.4.2/README.md).
+It adds **project pages only**, preserves role/ownership restrictions and
+requires a Plane backend rebuild or reviewed source-file overlay. Installing
+or restarting the MCP alone does **not** activate missing routes. The MCP's
+v1 project page update now retries the backend's documented PATCH after
+receiving PUT 405, and nested-page creation maps `parent_id` to `parent`.
+
+## Other self-hosted compatibility repairs
+
+- Redis-backed OAuth token caches **fail closed without**
+  `PLANE_OAUTH_STORE_ENCRYPTION_KEYS`. Supply a persistent Fernet key or a
+  comma-separated rotation list (current first) before running hosted OAuth.
+  Older plaintext values remain readable for migration; new writes are encrypted.
+  Local stdio with API-key authentication does not need this setting.
+- Intake status updates retry the base PATCH endpoint only on dedicated-route 404.
+- Project feature reads/updates fall back to the base project resource on 404;
+  unsupported advanced flags are refused instead of silently ignored.
+- Work-item assignee writes validate **active project membership** before
+  replacing lists, avoiding a known server bug that drops existing assignments.
+- Work-item relations fall back from missing `/dependencies/` to the older
+  `/relations/` endpoint; unsupported removal is reported, not invented.
+
 ## Live compatibility evidence
 
 The configured Oven MCP was probed read-only on 2026-10-24: v1 `page list` and `collection list` returned 404, while `project list` returned `403: Given API token is not valid`. The fork itself was also started as a separate MCP server: its `api.list` worked and its v2 `page list` reached the server but returned 404. These are **unresolved server/auth results**, not fixes we can honestly verify offline. Plane Community Edition may lack page API endpoints entirely (see [upstream compatibility report](https://github.com/makeplane/plane-mcp-server/issues/171)); a new MCP tool cannot create a server-side route. The fork does not automatically mutate Plane data or rotate credentials to work around them.
