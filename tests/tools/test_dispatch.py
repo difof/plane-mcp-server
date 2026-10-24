@@ -33,6 +33,8 @@ SAMPLES: dict[str, object] = {
     "timezone": "UTC",
     "workitem_identifier": "ENG-42",
     "kind": "workitem",
+    "method": "GET",
+    "path": "/api/v2/workspaces/test/pages/",
     "template_data": '{"name": "Spec"}',
 }
 
@@ -69,6 +71,8 @@ CONDITIONAL: dict[tuple[str, str], dict[str, object]] = {
 # Actions whose guard clause legitimately answers without calling the SDK.
 NO_CALL_EXPECTED: set[tuple[str, str]] = {
     ("get_pql_reference", "read"),  # returns static reference text
+    ("api", "list"),
+    ("api", "describe"),
     ("workspace", "retrieve"),  # answered from the connection's own credentials
 }
 
@@ -78,6 +82,7 @@ NEEDS_FIXTURE: set[tuple[str, str]] = {
     ("workitem_attachment", "read"),
     ("workitem_attachment", "download_url"),
     ("workitem_attachment", "upload_from_url"),
+    ("api", "request"),
 }
 
 
