@@ -43,6 +43,7 @@ from plane_mcp.toolkit import (
     pql_failure,
     rich_text,
 )
+from plane_mcp.tools.assignees_compat import validate_assignables
 
 logger = get_logger(__name__)
 
@@ -352,6 +353,8 @@ def register(mcp: FastMCP) -> None:
         if action == "create":
             if not name:
                 return missing(action, "name")
+            if assignees and (failure := validate_assignables(client, workspace_slug, project_id, assignees)):
+                return failure
             return client.work_items.create(
                 workspace_slug=workspace_slug,
                 project_id=project_id,
@@ -370,6 +373,8 @@ def register(mcp: FastMCP) -> None:
             )
 
         if action == "update":
+            if assignees and (failure := validate_assignables(client, workspace_slug, project_id, assignees)):
+                return failure
             return client.work_items.update(
                 workspace_slug=workspace_slug,
                 project_id=project_id,
@@ -402,6 +407,8 @@ def register(mcp: FastMCP) -> None:
         )
         ids = [value for value in ids_of(getattr(current, field)) if value not in removing]
         ids += [value for value in adding if value not in ids]
+        if action == "manage_assignee" and (failure := validate_assignables(client, workspace_slug, project_id, ids)):
+            return failure
         return client.work_items.update(
             workspace_slug=workspace_slug,
             project_id=project_id,
