@@ -8,6 +8,8 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.utilities.logging import get_logger
 from plane import PlaneClient
 
+from plane_mcp.sdk_compat import enable_sdk_compat
+
 logger = get_logger(__name__)
 
 
@@ -92,6 +94,8 @@ def get_plane_client_context() -> PlaneClientContext:
             base_url=base_url,
             api_key=api_key,
         )
+
+    enable_sdk_compat(client)
 
     return PlaneClientContext(
         client=client,
