@@ -1,0 +1,1255 @@
+diff --git a/apps/api/plane/api/serializers/__init__.py b/apps/api/plane/api/serializers/__init__.py
+index d0278eb14157..661221b6f8f6 100644
+--- a/apps/api/plane/api/serializers/__init__.py
++++ b/apps/api/plane/api/serializers/__init__.py
+@@ -68,3 +68,4 @@
+     ProjectMemberLiteAPISerializer,
+ )
+ from .sticky import StickySerializer
++from .page import PageSerializer, PageDetailSerializer
+diff --git a/apps/api/plane/api/serializers/page.py b/apps/api/plane/api/serializers/page.py
+new file mode 100644
+index 000000000000..f6eeb36ace4d
+--- /dev/null
++++ b/apps/api/plane/api/serializers/page.py
+@@ -0,0 +1,139 @@
++# Copyright (c) 2023-present Plane Software, Inc. and contributors
++# SPDX-License-Identifier: AGPL-3.0-only
++# See the LICENSE file for details.
++
++# Django imports
++from django.db import transaction
++
++# Third party imports
++from rest_framework import serializers
++
++# Module imports
++from .base import BaseSerializer
++from plane.db.models import Page, Project, ProjectPage
++from plane.utils.content_validator import validate_html_content
++
++
++class PageSerializer(BaseSerializer):
++    """
++    Serializer for pages with metadata fields.
++
++    Handles page metadata (name, access, color, parent, lock and archive
++    state) for list responses. Page content is exposed through
++    PageDetailSerializer.
++    """
++
++    class Meta:
++        model = Page
++        fields = [
++            "id",
++            "name",
++            "access",
++            "color",
++            "parent",
++            "is_locked",
++            "archived_at",
++            "workspace",
++            "view_props",
++            "logo_props",
++            "external_id",
++            "external_source",
++            "owned_by",
++            "created_at",
++            "updated_at",
++            "created_by",
++            "updated_by",
++        ]
++        read_only_fields = [
++            "id",
++            "workspace",
++            "owned_by",
++            "archived_at",
++            "created_at",
++            "updated_at",
++            "created_by",
++            "updated_by",
++        ]
++        extra_kwargs = {"name": {"required": True, "allow_blank": False}}
++
++    def validate_parent(self, value):
++        if value is None:
++            return value
++
++        # Reject the page itself and any of its descendants to avoid cycles;
++        # track visited ids so a pre-existing cycle in the chain cannot loop forever
++        if self.instance:
++            visited = set()
++            ancestor = value
++            while ancestor is not None:
++                if ancestor.id == self.instance.id:
++                    raise serializers.ValidationError("Parent page cannot be the page itself or one of its descendants")
++                if ancestor.id in visited:
++                    raise serializers.ValidationError("Parent page hierarchy contains a cycle")
++                visited.add(ancestor.id)
++                ancestor = ancestor.parent
++
++        # The parent page must belong to the same project
++        project_id = self.context.get("project_id") or (
++            self.instance and self.instance.project_pages.values_list("project_id", flat=True).first()
++        )
++        if (
++            project_id
++            and not ProjectPage.objects.filter(
++                page_id=value.id, project_id=project_id, deleted_at__isnull=True
++            ).exists()
++        ):
++            raise serializers.ValidationError("Parent page must belong to the same project")
++        return value
++
++
++class PageDetailSerializer(PageSerializer):
++    """
++    Extended page serializer including HTML content.
++
++    Provides the full page representation with description_html for
++    create, retrieve and update operations.
++    """
++
++    description_html = serializers.CharField(required=False, allow_blank=True)
++
++    class Meta(PageSerializer.Meta):
++        fields = PageSerializer.Meta.fields + ["description_html"]
++
++    def validate_description_html(self, value):
++        # Validate and sanitize the HTML content for security
++        if value:
++            is_valid, error_msg, sanitized_html = validate_html_content(value)
++            if not is_valid:
++                raise serializers.ValidationError(error_msg or "html content is not valid")
++            if sanitized_html is not None:
++                return sanitized_html
++        return value
++
++    def create(self, validated_data):
++        project_id = self.context["project_id"]
++        owned_by_id = self.context["owned_by_id"]
++
++        # Get the workspace id from the project
++        project = Project.objects.get(pk=project_id)
++
++        with transaction.atomic():
++            # Create the page
++            page = Page.objects.create(
++                **validated_data,
++                owned_by_id=owned_by_id,
++                created_by_id=owned_by_id,
++                updated_by_id=owned_by_id,
++                workspace_id=project.workspace_id,
++            )
++
++            # Create the project page
++            ProjectPage.objects.create(
++                workspace_id=page.workspace_id,
++                project_id=project_id,
++                page_id=page.id,
++                created_by_id=page.created_by_id,
++                updated_by_id=page.updated_by_id,
++            )
++
++        return page
+diff --git a/apps/api/plane/api/urls/__init__.py b/apps/api/plane/api/urls/__init__.py
+index 4a202431bc7b..676e1e2c161b 100644
+--- a/apps/api/plane/api/urls/__init__.py
++++ b/apps/api/plane/api/urls/__init__.py
+@@ -8,6 +8,7 @@
+ from .label import urlpatterns as label_patterns
+ from .member import urlpatterns as member_patterns
+ from .module import urlpatterns as module_patterns
++from .page import urlpatterns as page_patterns
+ from .project import urlpatterns as project_patterns
+ from .state import urlpatterns as state_patterns
+ from .user import urlpatterns as user_patterns
+@@ -22,6 +23,7 @@
+     *label_patterns,
+     *member_patterns,
+     *module_patterns,
++    *page_patterns,
+     *project_patterns,
+     *state_patterns,
+     *user_patterns,
+diff --git a/apps/api/plane/api/urls/page.py b/apps/api/plane/api/urls/page.py
+new file mode 100644
+index 000000000000..cc79fb29ea54
+--- /dev/null
++++ b/apps/api/plane/api/urls/page.py
+@@ -0,0 +1,29 @@
++# Copyright (c) 2023-present Plane Software, Inc. and contributors
++# SPDX-License-Identifier: AGPL-3.0-only
++# See the LICENSE file for details.
++
++from django.urls import path
++
++from plane.api.views.page import (
++    PageListCreateAPIEndpoint,
++    PageDetailAPIEndpoint,
++    PageArchiveUnarchiveAPIEndpoint,
++)
++
++urlpatterns = [
++    path(
++        "workspaces/<str:slug>/projects/<uuid:project_id>/pages/",
++        PageListCreateAPIEndpoint.as_view(http_method_names=["get", "post"]),
++        name="pages",
++    ),
++    path(
++        "workspaces/<str:slug>/projects/<uuid:project_id>/pages/<uuid:pk>/",
++        PageDetailAPIEndpoint.as_view(http_method_names=["get", "patch", "delete"]),
++        name="page-detail",
++    ),
++    path(
++        "workspaces/<str:slug>/projects/<uuid:project_id>/pages/<uuid:pk>/archive/",
++        PageArchiveUnarchiveAPIEndpoint.as_view(http_method_names=["post", "delete"]),
++        name="page-archive-unarchive",
++    ),
++]
+diff --git a/apps/api/plane/api/views/__init__.py b/apps/api/plane/api/views/__init__.py
+index 5e4660a7b2b4..01221473712d 100644
+--- a/apps/api/plane/api/views/__init__.py
++++ b/apps/api/plane/api/views/__init__.py
+@@ -72,3 +72,9 @@
+ from .invite import WorkspaceInvitationsViewset
+ 
+ from .sticky import StickyViewSet
++
++from .page import (
++    PageListCreateAPIEndpoint,
++    PageDetailAPIEndpoint,
++    PageArchiveUnarchiveAPIEndpoint,
++)
+diff --git a/apps/api/plane/api/views/page.py b/apps/api/plane/api/views/page.py
+new file mode 100644
+index 000000000000..765c0c1fa5e6
+--- /dev/null
++++ b/apps/api/plane/api/views/page.py
+@@ -0,0 +1,441 @@
++# Copyright (c) 2023-present Plane Software, Inc. and contributors
++# SPDX-License-Identifier: AGPL-3.0-only
++# See the LICENSE file for details.
++
++# Python imports
++from datetime import datetime
++
++# Django imports
++from django.db import transaction
++from django.db.models import Q
++
++# Third party imports
++from rest_framework import status
++from rest_framework.response import Response
++from drf_spectacular.utils import OpenApiResponse, OpenApiRequest
++
++# Module imports
++from plane.api.serializers import PageSerializer, PageDetailSerializer
++from plane.app.permissions import ROLE, ProjectEntityPermission
++from plane.app.views.page.base import unarchive_archive_page_and_descendants
++from plane.bgtasks.page_transaction_task import page_transaction
++from plane.db.models import Page, ProjectMember, UserFavorite, UserRecentVisit
++from .base import BaseAPIView
++from plane.utils.openapi import (
++    page_docs,
++    PAGE_ID_PARAMETER,
++    CURSOR_PARAMETER,
++    PER_PAGE_PARAMETER,
++    FIELDS_PARAMETER,
++    EXPAND_PARAMETER,
++    create_paginated_response,
++    # Request Examples
++    PAGE_CREATE_EXAMPLE,
++    PAGE_UPDATE_EXAMPLE,
++    # Response Examples
++    PAGE_EXAMPLE,
++    INVALID_REQUEST_RESPONSE,
++    DELETED_RESPONSE,
++    ARCHIVED_RESPONSE,
++    UNARCHIVED_RESPONSE,
++)
++
++
++def project_page_queryset(slug, project_id, user):
++    """Pages of a project visible to the user: their own plus public ones."""
++    return (
++        Page.objects.filter(workspace__slug=slug)
++        .filter(projects__id=project_id)
++        .filter(
++            projects__project_projectmember__member=user,
++            projects__project_projectmember__is_active=True,
++            projects__archived_at__isnull=True,
++        )
++        .filter(project_pages__deleted_at__isnull=True)
++        .filter(Q(owned_by=user) | Q(access=Page.PUBLIC_ACCESS))
++        .distinct()
++    )
++
++
++class PageListCreateAPIEndpoint(BaseAPIView):
++    """Page List and Create Endpoint"""
++
++    serializer_class = PageSerializer
++    model = Page
++    permission_classes = [ProjectEntityPermission]
++    use_read_replica = True
++
++    def get_queryset(self):
++        return project_page_queryset(
++            self.kwargs.get("slug"), self.kwargs.get("project_id"), self.request.user
++        ).select_related("workspace", "owned_by")
++
++    @page_docs(
++        operation_id="create_page",
++        summary="Create page",
++        description="Create a new page in a project with HTML content.",
++        request=OpenApiRequest(
++            request=PageDetailSerializer,
++            examples=[PAGE_CREATE_EXAMPLE],
++        ),
++        responses={
++            201: OpenApiResponse(
++                description="Page created",
++                response=PageDetailSerializer,
++                examples=[PAGE_EXAMPLE],
++            ),
++            400: INVALID_REQUEST_RESPONSE,
++        },
++    )
++    def post(self, request, slug, project_id):
++        """Create page
++
++        Create a new page in a project with HTML content.
++        Supports external ID tracking for integration purposes.
++        """
++        serializer = PageDetailSerializer(
++            data=request.data,
++            context={"project_id": project_id, "owned_by_id": request.user.id},
++        )
++        if serializer.is_valid():
++            if request.data.get("external_id") and request.data.get("external_source"):
++                existing_page = Page.objects.filter(
++                    projects__id=project_id,
++                    workspace__slug=slug,
++                    external_source=request.data.get("external_source"),
++                    external_id=request.data.get("external_id"),
++                ).first()
++                if existing_page:
++                    return Response(
++                        {
++                            "error": "Page with the same external id and external source already exists",
++                            "id": str(existing_page.id),
++                        },
++                        status=status.HTTP_409_CONFLICT,
++                    )
++
++            page = serializer.save()
++            # capture the page transaction with the sanitized content
++            page_transaction.delay(
++                new_description_html=page.description_html or "<p></p>",
++                old_description_html=None,
++                page_id=str(page.id),
++            )
++            return Response(PageDetailSerializer(page).data, status=status.HTTP_201_CREATED)
++        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
++
++    @page_docs(
++        operation_id="list_pages",
++        summary="List pages",
++        description="Retrieve all pages in a project visible to the requesting user.",
++        parameters=[
++            CURSOR_PARAMETER,
++            PER_PAGE_PARAMETER,
++            FIELDS_PARAMETER,
++            EXPAND_PARAMETER,
++        ],
++        responses={
++            200: create_paginated_response(
++                PageSerializer,
++                "PaginatedPageResponse",
++                "Paginated list of pages",
++                "Paginated Pages",
++            ),
++        },
++    )
++    def get(self, request, slug, project_id):
++        """List pages
++
++        Retrieve all pages in a project, including nested pages.
++        Private pages are only visible to their owner.
++        Returns paginated results.
++        """
++        return self.paginate(
++            request=request,
++            queryset=(self.get_queryset()),
++            on_results=lambda pages: PageSerializer(pages, many=True, fields=self.fields, expand=self.expand).data,
++        )
++
++
++class PageDetailAPIEndpoint(BaseAPIView):
++    """Page Detail Endpoint"""
++
++    serializer_class = PageDetailSerializer
++    model = Page
++    permission_classes = [ProjectEntityPermission]
++    use_read_replica = True
++
++    def get_queryset(self):
++        return project_page_queryset(
++            self.kwargs.get("slug"), self.kwargs.get("project_id"), self.request.user
++        ).select_related("workspace", "owned_by")
++
++    @page_docs(
++        operation_id="retrieve_page",
++        summary="Retrieve page",
++        description="Retrieve details of a specific page including its HTML content.",
++        parameters=[
++            PAGE_ID_PARAMETER,
++        ],
++        responses={
++            200: OpenApiResponse(
++                description="Page retrieved",
++                response=PageDetailSerializer,
++                examples=[PAGE_EXAMPLE],
++            ),
++        },
++    )
++    def get(self, request, slug, project_id, pk):
++        """Retrieve page
++
++        Retrieve details of a specific page including its HTML content.
++        """
++        serializer = PageDetailSerializer(
++            self.get_queryset().get(pk=pk),
++            fields=self.fields,
++            expand=self.expand,
++        )
++        return Response(serializer.data, status=status.HTTP_200_OK)
++
++    @page_docs(
++        operation_id="update_page",
++        summary="Update page",
++        description="Partially update an existing page's properties or HTML content.",
++        parameters=[
++            PAGE_ID_PARAMETER,
++        ],
++        request=OpenApiRequest(
++            request=PageDetailSerializer,
++            examples=[PAGE_UPDATE_EXAMPLE],
++        ),
++        responses={
++            200: OpenApiResponse(
++                description="Page updated",
++                response=PageDetailSerializer,
++                examples=[PAGE_EXAMPLE],
++            ),
++            400: INVALID_REQUEST_RESPONSE,
++        },
++    )
++    def patch(self, request, slug, project_id, pk):
++        """Update page
++
++        Partially update an existing page's properties or HTML content.
++        Locked pages cannot be updated, and only the page owner can change
++        its access level.
++        """
++        page = self.get_queryset().get(pk=pk)
++
++        # A locked page can only be unlocked
++        if page.is_locked and set(request.data.keys()) - {"is_locked"}:
++            return Response({"error": "Page is locked"}, status=status.HTTP_400_BAD_REQUEST)
++
++        # Only update access if the page owner is the requesting user
++        requested_access = request.data.get("access", page.access)
++        try:
++            requested_access = int(requested_access)
++        except (TypeError, ValueError):
++            return Response({"error": "Invalid access value"}, status=status.HTTP_400_BAD_REQUEST)
++        if page.access != requested_access and page.owned_by_id != request.user.id:
++            return Response(
++                {"error": "Access cannot be updated since this page is owned by someone else"},
++                status=status.HTTP_400_BAD_REQUEST,
++            )
++
++        if (
++            request.data.get("external_id")
++            and (page.external_id != str(request.data.get("external_id")))
++            and Page.objects.filter(
++                projects__id=project_id,
++                workspace__slug=slug,
++                external_source=request.data.get("external_source", page.external_source),
++                external_id=request.data.get("external_id"),
++            ).exists()
++        ):
++            return Response(
++                {
++                    "error": "Page with the same external id and external source already exists",
++                    "id": str(page.id),
++                },
++                status=status.HTTP_409_CONFLICT,
++            )
++
++        serializer = PageDetailSerializer(
++            page,
++            data=request.data,
++            partial=True,
++            context={"project_id": project_id},
++        )
++        page_description = page.description_html
++        if serializer.is_valid():
++            page = serializer.save()
++            # capture the page transaction with the sanitized content
++            if request.data.get("description_html"):
++                page_transaction.delay(
++                    new_description_html=page.description_html or "<p></p>",
++                    old_description_html=page_description,
++                    page_id=str(pk),
++                )
++            return Response(serializer.data, status=status.HTTP_200_OK)
++        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
++
++    @page_docs(
++        operation_id="delete_page",
++        summary="Delete page",
++        description="Permanently remove a page from a project. The page must be archived first, and only the page owner or a project admin can delete it.",  # noqa: E501
++        parameters=[
++            PAGE_ID_PARAMETER,
++        ],
++        responses={
++            204: DELETED_RESPONSE,
++            400: INVALID_REQUEST_RESPONSE,
++        },
++    )
++    def delete(self, request, slug, project_id, pk):
++        """Delete page
++
++        Permanently remove a page from a project. The page must be archived
++        first, and only the page owner or a project admin can delete it.
++        """
++        page = self.get_queryset().get(pk=pk)
++
++        if page.archived_at is None:
++            return Response(
++                {"error": "The page should be archived before deleting"},
++                status=status.HTTP_400_BAD_REQUEST,
++            )
++
++        if page.owned_by_id != request.user.id and (
++            not ProjectMember.objects.filter(
++                workspace__slug=slug,
++                member=request.user,
++                role=ROLE.ADMIN.value,
++                project_id=project_id,
++                is_active=True,
++            ).exists()
++        ):
++            return Response(
++                {"error": "Only admin or owner can delete the page"},
++                status=status.HTTP_403_FORBIDDEN,
++            )
++
++        with transaction.atomic():
++            # remove parent from all the children
++            Page.objects.filter(
++                parent_id=pk,
++                projects__id=project_id,
++                workspace__slug=slug,
++                project_pages__deleted_at__isnull=True,
++            ).update(parent=None)
++
++            page.delete()
++            # Delete the user favorite page
++            UserFavorite.objects.filter(
++                project=project_id,
++                workspace__slug=slug,
++                entity_identifier=pk,
++                entity_type="page",
++            ).delete()
++            # Delete the page from recent visit
++            UserRecentVisit.objects.filter(
++                project_id=project_id,
++                workspace__slug=slug,
++                entity_identifier=pk,
++                entity_name="page",
++            ).delete(soft=False)
++        return Response(status=status.HTTP_204_NO_CONTENT)
++
++
++class PageArchiveUnarchiveAPIEndpoint(BaseAPIView):
++    """Page Archive and Unarchive Endpoint"""
++
++    serializer_class = PageSerializer
++    model = Page
++    permission_classes = [ProjectEntityPermission]
++
++    def get_queryset(self):
++        return project_page_queryset(self.kwargs.get("slug"), self.kwargs.get("project_id"), self.request.user)
++
++    @page_docs(
++        operation_id="archive_page",
++        summary="Archive page",
++        description="Archive a page and all of its nested pages. Only the page owner or a project admin can archive it.",  # noqa: E501
++        parameters=[
++            PAGE_ID_PARAMETER,
++        ],
++        responses={
++            200: ARCHIVED_RESPONSE,
++            400: INVALID_REQUEST_RESPONSE,
++        },
++    )
++    def post(self, request, slug, project_id, pk):
++        """Archive page
++
++        Archive a page and all of its nested pages.
++        Only the page owner or a project admin can archive it.
++        """
++        page = self.get_queryset().get(pk=pk)
++
++        # only the owner or admin can archive the page
++        if (
++            ProjectMember.objects.filter(
++                project_id=project_id, member=request.user, is_active=True, role__lte=ROLE.MEMBER.value
++            ).exists()
++            and request.user.id != page.owned_by_id
++        ):
++            return Response(
++                {"error": "Only the owner or admin can archive the page"},
++                status=status.HTTP_403_FORBIDDEN,
++            )
++
++        UserFavorite.objects.filter(
++            entity_type="page",
++            entity_identifier=pk,
++            project_id=project_id,
++            workspace__slug=slug,
++        ).delete()
++
++        unarchive_archive_page_and_descendants(pk, datetime.now())
++
++        return Response({"archived_at": str(datetime.now())}, status=status.HTTP_200_OK)
++
++    @page_docs(
++        operation_id="unarchive_page",
++        summary="Unarchive page",
++        description="Restore an archived page and all of its nested pages. Only the page owner or a project admin can unarchive it.",  # noqa: E501
++        parameters=[
++            PAGE_ID_PARAMETER,
++        ],
++        responses={
++            204: UNARCHIVED_RESPONSE,
++            400: INVALID_REQUEST_RESPONSE,
++        },
++    )
++    def delete(self, request, slug, project_id, pk):
++        """Unarchive page
++
++        Restore an archived page and all of its nested pages.
++        Only the page owner or a project admin can unarchive it.
++        """
++        page = self.get_queryset().get(pk=pk)
++
++        # only the owner or admin can unarchive the page
++        if (
++            ProjectMember.objects.filter(
++                project_id=project_id, member=request.user, is_active=True, role__lte=ROLE.MEMBER.value
++            ).exists()
++            and request.user.id != page.owned_by_id
++        ):
++            return Response(
++                {"error": "Only the owner or admin can unarchive the page"},
++                status=status.HTTP_403_FORBIDDEN,
++            )
++
++        # if parent archived then page will be unarchived breaking hierarchy
++        if page.parent_id and page.parent.archived_at:
++            page.parent = None
++            page.save(update_fields=["parent"])
++
++        unarchive_archive_page_and_descendants(pk, None)
++
++        return Response(status=status.HTTP_204_NO_CONTENT)
+diff --git a/apps/api/plane/tests/contract/api/test_pages.py b/apps/api/plane/tests/contract/api/test_pages.py
+new file mode 100644
+index 000000000000..83b534eb1f17
+--- /dev/null
++++ b/apps/api/plane/tests/contract/api/test_pages.py
+@@ -0,0 +1,405 @@
++# Copyright (c) 2023-present Plane Software, Inc. and contributors
++# SPDX-License-Identifier: AGPL-3.0-only
++# See the LICENSE file for details.
++
++from unittest.mock import patch
++
++import pytest
++from django.utils import timezone
++from rest_framework import status
++
++from plane.db.models import Page, Project, ProjectMember, ProjectPage, User
++
++
++@pytest.fixture
++def project(db, workspace, create_user):
++    """Create a test project with the user as a member"""
++    project = Project.objects.create(
++        name="Test Project",
++        identifier="TP",
++        workspace=workspace,
++        created_by=create_user,
++        page_view=True,
++    )
++    ProjectMember.objects.create(
++        project=project,
++        member=create_user,
++        role=20,  # Admin role
++        is_active=True,
++    )
++    return project
++
++
++@pytest.fixture
++def other_user(db):
++    """Create a second user to test ownership rules"""
++    from uuid import uuid4
++
++    unique_id = uuid4().hex[:8]
++    user = User.objects.create(
++        email=f"other-{unique_id}@plane.so",
++        username=f"other_user_{unique_id}",
++        first_name="Other",
++        last_name="User",
++    )
++    user.set_password("other-password")
++    user.save()
++    return user
++
++
++@pytest.fixture
++def member_api_key_client(db, project, other_user):
++    """Return an API key client for a non-admin project member (role 15)"""
++    from rest_framework.test import APIClient
++
++    from plane.db.models.api import APIToken
++
++    ProjectMember.objects.create(
++        project=project,
++        member=other_user,
++        role=15,  # Member role
++        is_active=True,
++    )
++    token = APIToken.objects.create(user=other_user, label="Member Token", token="member-api-token-12345")
++    client = APIClient()
++    client.credentials(HTTP_X_API_KEY=token.token)
++    return client
++
++
++@pytest.fixture
++def page_data():
++    """Sample page data for tests"""
++    return {
++        "name": "Test Page",
++        "description_html": "<h1>Test Page</h1><p>A test page for contract tests.</p>",
++    }
++
++
++@pytest.fixture
++def create_page(db, project, create_user):
++    """Create a test page owned by the authenticated user"""
++    page = Page.objects.create(
++        name="Existing Page",
++        description_html="<p>An existing page</p>",
++        workspace=project.workspace,
++        owned_by=create_user,
++        access=Page.PUBLIC_ACCESS,
++    )
++    ProjectPage.objects.create(workspace=project.workspace, project=project, page=page)
++    return page
++
++
++def _make_page(project, owner, access=Page.PUBLIC_ACCESS, **kwargs):
++    """Helper to create a page linked to a project"""
++    page = Page.objects.create(
++        workspace=project.workspace,
++        owned_by=owner,
++        access=access,
++        name=kwargs.pop("name", "Helper Page"),
++        **kwargs,
++    )
++    ProjectPage.objects.create(workspace=project.workspace, project=project, page=page)
++    return page
++
++
++@pytest.mark.contract
++class TestPageListCreateAPIEndpoint:
++    """Test Page List and Create API Endpoint"""
++
++    def get_page_url(self, workspace_slug, project_id):
++        """Helper to get page endpoint URL"""
++        return f"/api/v1/workspaces/{workspace_slug}/projects/{project_id}/pages/"
++
++    @pytest.mark.django_db
++    def test_create_page_success(self, api_key_client, workspace, project, page_data):
++        """Test successful page creation"""
++        url = self.get_page_url(workspace.slug, project.id)
++
++        with patch("plane.api.views.page.page_transaction") as mock_page_transaction:
++            response = api_key_client.post(url, page_data, format="json")
++
++        assert response.status_code == status.HTTP_201_CREATED
++        assert Page.objects.count() == 1
++
++        created_page = Page.objects.first()
++        assert created_page.name == page_data["name"]
++        assert created_page.description_html == page_data["description_html"]
++        assert created_page.owned_by_id is not None
++        assert ProjectPage.objects.filter(page=created_page, project=project).exists()
++        assert response.data["description_html"] == page_data["description_html"]
++        mock_page_transaction.delay.assert_called_once()
++
++    @pytest.mark.django_db
++    def test_create_page_invalid_data(self, api_key_client, workspace, project):
++        """Test page creation with invalid data"""
++        url = self.get_page_url(workspace.slug, project.id)
++
++        # Test with empty data
++        response = api_key_client.post(url, {}, format="json")
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++        # Test with missing name
++        response = api_key_client.post(url, {"description_html": "<p>No name</p>"}, format="json")
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++    @pytest.mark.django_db
++    def test_create_page_external_id_conflict(self, api_key_client, workspace, project, page_data):
++        """Test page creation deduplication by external id and source"""
++        url = self.get_page_url(workspace.slug, project.id)
++        payload = {**page_data, "external_id": "ext-1", "external_source": "github"}
++
++        with patch("plane.api.views.page.page_transaction"):
++            response = api_key_client.post(url, payload, format="json")
++            assert response.status_code == status.HTTP_201_CREATED
++
++            response = api_key_client.post(url, payload, format="json")
++
++        assert response.status_code == status.HTTP_409_CONFLICT
++        assert "id" in response.data
++        assert Page.objects.count() == 1
++
++    @pytest.mark.django_db
++    def test_create_page_ignores_archived_at(self, api_key_client, workspace, project, page_data):
++        """Test archived_at is read-only and cannot be set on create"""
++        url = self.get_page_url(workspace.slug, project.id)
++        payload = {**page_data, "archived_at": "2024-01-01"}
++
++        with patch("plane.api.views.page.page_transaction"):
++            response = api_key_client.post(url, payload, format="json")
++
++        assert response.status_code == status.HTTP_201_CREATED
++        assert Page.objects.first().archived_at is None
++
++    @pytest.mark.django_db
++    def test_list_pages(self, api_key_client, workspace, project, create_page):
++        """Test listing pages returns the paginated envelope"""
++        url = self.get_page_url(workspace.slug, project.id)
++
++        response = api_key_client.get(url)
++
++        assert response.status_code == status.HTTP_200_OK
++        assert response.data["total_count"] == 1
++        assert len(response.data["results"]) == 1
++        assert response.data["results"][0]["name"] == create_page.name
++
++    @pytest.mark.django_db
++    def test_list_pages_excludes_other_users_private_pages(self, api_key_client, workspace, project, other_user):
++        """Test private pages of other users are not listed"""
++        _make_page(project, other_user, access=Page.PRIVATE_ACCESS, name="Private Page")
++        _make_page(project, other_user, access=Page.PUBLIC_ACCESS, name="Public Page")
++
++        url = self.get_page_url(workspace.slug, project.id)
++        response = api_key_client.get(url)
++
++        assert response.status_code == status.HTTP_200_OK
++        names = [page["name"] for page in response.data["results"]]
++        assert "Public Page" in names
++        assert "Private Page" not in names
++
++    @pytest.mark.django_db
++    def test_pages_require_authentication(self, api_client, workspace, project):
++        """Test pages endpoints reject unauthenticated requests"""
++        url = self.get_page_url(workspace.slug, project.id)
++
++        response = api_client.get(url)
++
++        assert response.status_code == status.HTTP_401_UNAUTHORIZED
++
++
++@pytest.mark.contract
++class TestPageDetailAPIEndpoint:
++    """Test Page Detail API Endpoint"""
++
++    def get_page_url(self, workspace_slug, project_id, page_id):
++        """Helper to get page detail endpoint URL"""
++        return f"/api/v1/workspaces/{workspace_slug}/projects/{project_id}/pages/{page_id}/"
++
++    @pytest.mark.django_db
++    def test_retrieve_page(self, api_key_client, workspace, project, create_page):
++        """Test retrieving a page returns its content"""
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.get(url)
++
++        assert response.status_code == status.HTTP_200_OK
++        assert response.data["id"] == create_page.id
++        assert response.data["description_html"] == create_page.description_html
++
++    @pytest.mark.django_db
++    def test_retrieve_other_users_private_page_not_found(self, api_key_client, workspace, project, other_user):
++        """Test private pages of other users are not retrievable"""
++        page = _make_page(project, other_user, access=Page.PRIVATE_ACCESS)
++        url = self.get_page_url(workspace.slug, project.id, page.id)
++
++        response = api_key_client.get(url)
++
++        assert response.status_code == status.HTTP_404_NOT_FOUND
++
++    @pytest.mark.django_db
++    def test_update_page(self, api_key_client, workspace, project, create_page):
++        """Test updating a page's name and content"""
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++        payload = {"name": "Updated Page", "description_html": "<p>Updated content</p>"}
++
++        with patch("plane.api.views.page.page_transaction") as mock_page_transaction:
++            response = api_key_client.patch(url, payload, format="json")
++
++        assert response.status_code == status.HTTP_200_OK
++        create_page.refresh_from_db()
++        assert create_page.name == "Updated Page"
++        assert create_page.description_html == "<p>Updated content</p>"
++        mock_page_transaction.delay.assert_called_once()
++
++    @pytest.mark.django_db
++    def test_update_locked_page(self, api_key_client, workspace, project, create_page):
++        """Test locked pages cannot be updated"""
++        create_page.is_locked = True
++        create_page.save()
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.patch(url, {"name": "New Name"}, format="json")
++
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++    @pytest.mark.django_db
++    def test_unlock_locked_page(self, api_key_client, workspace, project, create_page):
++        """Test a locked page can still be unlocked"""
++        create_page.is_locked = True
++        create_page.save()
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.patch(url, {"is_locked": False}, format="json")
++
++        assert response.status_code == status.HTTP_200_OK
++        create_page.refresh_from_db()
++        assert create_page.is_locked is False
++
++    @pytest.mark.django_db
++    def test_update_with_string_access_value(self, api_key_client, workspace, project, other_user):
++        """Test access values sent as strings do not trigger false ownership errors"""
++        page = _make_page(project, other_user, access=Page.PUBLIC_ACCESS)
++        url = self.get_page_url(workspace.slug, project.id, page.id)
++
++        response = api_key_client.patch(url, {"name": "Renamed", "access": str(Page.PUBLIC_ACCESS)}, format="json")
++
++        assert response.status_code == status.HTTP_200_OK
++        page.refresh_from_db()
++        assert page.name == "Renamed"
++
++    @pytest.mark.django_db
++    def test_update_access_by_non_owner(self, api_key_client, workspace, project, other_user):
++        """Test only the page owner can change its access level"""
++        page = _make_page(project, other_user, access=Page.PUBLIC_ACCESS)
++        url = self.get_page_url(workspace.slug, project.id, page.id)
++
++        response = api_key_client.patch(url, {"access": Page.PRIVATE_ACCESS}, format="json")
++
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++    @pytest.mark.django_db
++    def test_delete_page_requires_archive(self, api_key_client, workspace, project, create_page):
++        """Test pages must be archived before deletion"""
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.delete(url)
++
++        assert response.status_code == status.HTTP_400_BAD_REQUEST
++        assert Page.objects.filter(pk=create_page.pk).exists()
++
++    @pytest.mark.django_db
++    def test_delete_archived_page(self, api_key_client, workspace, project, create_page):
++        """Test archived pages can be deleted by their owner"""
++        create_page.archived_at = timezone.now()
++        create_page.save()
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.delete(url)
++
++        assert response.status_code == status.HTTP_204_NO_CONTENT
++        assert not Page.objects.filter(pk=create_page.pk).exists()
++
++    @pytest.mark.django_db
++    def test_delete_by_non_owner_member_forbidden(self, member_api_key_client, workspace, project, create_page):
++        """Test a non-owner non-admin member cannot delete a page"""
++        create_page.archived_at = timezone.now()
++        create_page.save()
++        url = self.get_page_url(workspace.slug, project.id, create_page.id)
++
++        response = member_api_key_client.delete(url)
++
++        assert response.status_code == status.HTTP_403_FORBIDDEN
++        assert Page.objects.filter(pk=create_page.pk).exists()
++
++
++@pytest.mark.contract
++class TestPageArchiveUnarchiveAPIEndpoint:
++    """Test Page Archive and Unarchive API Endpoint"""
++
++    def get_archive_url(self, workspace_slug, project_id, page_id):
++        """Helper to get page archive endpoint URL"""
++        return f"/api/v1/workspaces/{workspace_slug}/projects/{project_id}/pages/{page_id}/archive/"
++
++    @pytest.mark.django_db
++    def test_archive_page(self, api_key_client, workspace, project, create_page):
++        """Test archiving a page"""
++        url = self.get_archive_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.post(url)
++
++        assert response.status_code == status.HTTP_200_OK
++        assert "archived_at" in response.data
++        create_page.refresh_from_db()
++        assert create_page.archived_at is not None
++
++    @pytest.mark.django_db
++    def test_unarchive_page(self, api_key_client, workspace, project, create_page):
++        """Test unarchiving an archived page"""
++        create_page.archived_at = timezone.now()
++        create_page.save()
++        url = self.get_archive_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.delete(url)
++
++        assert response.status_code == status.HTTP_204_NO_CONTENT
++        create_page.refresh_from_db()
++        assert create_page.archived_at is None
++
++    @pytest.mark.django_db
++    def test_archive_cascades_to_children(self, api_key_client, workspace, project, create_page, create_user):
++        """Test archiving a page also archives its nested pages"""
++        child = _make_page(project, create_user, name="Child Page", parent=create_page)
++        url = self.get_archive_url(workspace.slug, project.id, create_page.id)
++
++        response = api_key_client.post(url)
++
++        assert response.status_code == status.HTTP_200_OK
++        child.refresh_from_db()
++        assert child.archived_at is not None
++
++    @pytest.mark.django_db
++    def test_unarchive_detaches_archived_parent(self, api_key_client, workspace, project, create_page, create_user):
++        """Test unarchiving a page whose parent stays archived clears the parent"""
++        create_page.archived_at = timezone.now()
++        create_page.save()
++        child = _make_page(project, create_user, name="Child Page", parent=create_page, archived_at=timezone.now())
++        url = self.get_archive_url(workspace.slug, project.id, child.id)
++
++        response = api_key_client.delete(url)
++
++        assert response.status_code == status.HTTP_204_NO_CONTENT
++        child.refresh_from_db()
++        assert child.archived_at is None
++        assert child.parent_id is None
++
++    @pytest.mark.django_db
++    def test_archive_by_non_owner_member_forbidden(self, member_api_key_client, workspace, project, create_page):
++        """Test a non-owner non-admin member cannot archive or unarchive a page"""
++        url = self.get_archive_url(workspace.slug, project.id, create_page.id)
++
++        response = member_api_key_client.post(url)
++        assert response.status_code == status.HTTP_403_FORBIDDEN
++
++        create_page.archived_at = timezone.now()
++        create_page.save()
++        response = member_api_key_client.delete(url)
++        assert response.status_code == status.HTTP_403_FORBIDDEN
+diff --git a/apps/api/plane/utils/openapi/__init__.py b/apps/api/plane/utils/openapi/__init__.py
+index 090d076ecd18..0fb1168e76bf 100644
+--- a/apps/api/plane/utils/openapi/__init__.py
++++ b/apps/api/plane/utils/openapi/__init__.py
+@@ -30,6 +30,7 @@
+     ISSUE_ID_PARAMETER,
+     STATE_ID_PARAMETER,
+     LABEL_ID_PARAMETER,
++    PAGE_ID_PARAMETER,
+     COMMENT_ID_PARAMETER,
+     LINK_ID_PARAMETER,
+     ATTACHMENT_ID_PARAMETER,
+@@ -123,6 +124,8 @@
+     MODULE_ISSUE_REQUEST_EXAMPLE,
+     PROJECT_CREATE_EXAMPLE,
+     PROJECT_UPDATE_EXAMPLE,
++    PAGE_CREATE_EXAMPLE,
++    PAGE_UPDATE_EXAMPLE,
+     STATE_CREATE_EXAMPLE,
+     STATE_UPDATE_EXAMPLE,
+     INTAKE_ISSUE_CREATE_EXAMPLE,
+@@ -137,6 +140,7 @@
+     TRANSFER_CYCLE_ISSUE_ERROR_EXAMPLE,
+     TRANSFER_CYCLE_COMPLETED_ERROR_EXAMPLE,
+     MODULE_EXAMPLE,
++    PAGE_EXAMPLE,
+     STATE_EXAMPLE,
+     LABEL_EXAMPLE,
+     ISSUE_LINK_EXAMPLE,
+@@ -172,6 +176,7 @@
+     issue_attachment_docs,
+     module_docs,
+     module_issue_docs,
++    page_docs,
+     state_docs,
+     estimate_docs,
+     estimate_point_docs,
+@@ -199,6 +204,7 @@
+     "ISSUE_ID_PARAMETER",
+     "STATE_ID_PARAMETER",
+     "LABEL_ID_PARAMETER",
++    "PAGE_ID_PARAMETER",
+     "COMMENT_ID_PARAMETER",
+     "LINK_ID_PARAMETER",
+     "ATTACHMENT_ID_PARAMETER",
+@@ -286,6 +292,8 @@
+     "MODULE_ISSUE_REQUEST_EXAMPLE",
+     "PROJECT_CREATE_EXAMPLE",
+     "PROJECT_UPDATE_EXAMPLE",
++    "PAGE_CREATE_EXAMPLE",
++    "PAGE_UPDATE_EXAMPLE",
+     "STATE_CREATE_EXAMPLE",
+     "STATE_UPDATE_EXAMPLE",
+     "INTAKE_ISSUE_CREATE_EXAMPLE",
+@@ -300,6 +308,7 @@
+     "TRANSFER_CYCLE_ISSUE_ERROR_EXAMPLE",
+     "TRANSFER_CYCLE_COMPLETED_ERROR_EXAMPLE",
+     "MODULE_EXAMPLE",
++    "PAGE_EXAMPLE",
+     "STATE_EXAMPLE",
+     "LABEL_EXAMPLE",
+     "ISSUE_LINK_EXAMPLE",
+@@ -332,6 +341,7 @@
+     "issue_attachment_docs",
+     "module_docs",
+     "module_issue_docs",
++    "page_docs",
+     "state_docs",
+     "estimate_docs",
+     "estimate_point_docs",
+diff --git a/apps/api/plane/utils/openapi/decorators.py b/apps/api/plane/utils/openapi/decorators.py
+index 7ded9fb10b38..1d3caeddf1c0 100644
+--- a/apps/api/plane/utils/openapi/decorators.py
++++ b/apps/api/plane/utils/openapi/decorators.py
+@@ -283,6 +283,21 @@ def state_docs(**kwargs):
+     return extend_schema(**_merge_schema_options(defaults, kwargs))
+ 
+ 
++def page_docs(**kwargs):
++    """Decorator for page management endpoints"""
++    defaults = {
++        "tags": ["Pages"],
++        "parameters": [WORKSPACE_SLUG_PARAMETER, PROJECT_ID_PARAMETER],
++        "responses": {
++            401: UNAUTHORIZED_RESPONSE,
++            403: FORBIDDEN_RESPONSE,
++            404: NOT_FOUND_RESPONSE,
++        },
++    }
++
++    return extend_schema(**_merge_schema_options(defaults, kwargs))
++
++
+ def sticky_docs(**kwargs):
+     """Decorator for sticky management endpoints"""
+     defaults = {
+diff --git a/apps/api/plane/utils/openapi/examples.py b/apps/api/plane/utils/openapi/examples.py
+index 20aff18958a9..78498abf2a95 100644
+--- a/apps/api/plane/utils/openapi/examples.py
++++ b/apps/api/plane/utils/openapi/examples.py
+@@ -676,6 +676,47 @@
+     },
+ )
+ 
++# Page Examples
++PAGE_CREATE_EXAMPLE = OpenApiExample(
++    "PageCreateSerializer",
++    value={
++        "name": "Meeting Notes",
++        "description_html": "<h1>Meeting Notes</h1><p>Notes from the weekly sync.</p>",
++        "access": 0,
++        "color": "#3f76ff",
++        "external_id": "1234567890",
++        "external_source": "github",
++    },
++    description="Example request for creating a page",
++)
++
++PAGE_UPDATE_EXAMPLE = OpenApiExample(
++    "PageUpdateSerializer",
++    value={
++        "name": "Updated Meeting Notes",
++        "description_html": "<h1>Meeting Notes</h1><p>Updated notes from the weekly sync.</p>",
++    },
++    description="Example request for updating a page",
++)
++
++PAGE_EXAMPLE = OpenApiExample(
++    name="Page",
++    value={
++        "id": "550e8400-e29b-41d4-a716-446655440000",
++        "name": "Meeting Notes",
++        "description_html": "<h1>Meeting Notes</h1><p>Notes from the weekly sync.</p>",
++        "access": 0,
++        "color": "#3f76ff",
++        "parent": None,
++        "is_locked": False,
++        "archived_at": None,
++        "view_props": {"full_width": False},
++        "logo_props": {},
++        "created_at": "2024-01-01T10:30:00Z",
++        "updated_at": "2024-01-10T15:45:00Z",
++    },
++)
++
+ STICKY_EXAMPLE = OpenApiExample(
+     name="Sticky",
+     value={
+diff --git a/apps/api/plane/utils/openapi/parameters.py b/apps/api/plane/utils/openapi/parameters.py
+index 2812892ec915..49fcef1f0bad 100644
+--- a/apps/api/plane/utils/openapi/parameters.py
++++ b/apps/api/plane/utils/openapi/parameters.py
+@@ -195,6 +195,21 @@
+     ],
+ )
+ 
++PAGE_ID_PARAMETER = OpenApiParameter(
++    name="pk",
++    description="Page ID",
++    required=True,
++    type=OpenApiTypes.UUID,
++    location=OpenApiParameter.PATH,
++    examples=[
++        OpenApiExample(
++            name="Example page ID",
++            value="550e8400-e29b-41d4-a716-446655440000",
++            description="A typical page UUID",
++        )
++    ],
++)
++
+ COMMENT_ID_PARAMETER = OpenApiParameter(
+     name="pk",
+     description="Comment ID",
