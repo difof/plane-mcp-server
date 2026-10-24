@@ -131,6 +131,13 @@ def test_action_reaches_the_sdk(mod, action, registered, spy):
     if (mod.NAME, action.name) in NEEDS_FIXTURE:
         pytest.skip("needs populated remote state; covered by test_attachments.py")
     tool = registered[mod.NAME]
+    if (mod.NAME, action.name) == ("workitem", "manage_assignee"):
+        from types import SimpleNamespace
+
+        spy.returns["projects.get_members_lite"] = SimpleNamespace(
+            results=[SimpleNamespace(id="id-1", role=15, is_active=True)],
+            next_page_results=False,
+        )
     result = tool.fn(**_call_args(mod, action, tool))
 
     assert not (isinstance(result, str) and result.startswith("Error:")), (
@@ -290,6 +297,11 @@ def test_manage_accepts_several_ids_at_once(field, registered, spy):
     from types import SimpleNamespace
 
     spy.returns["work_items.retrieve"] = SimpleNamespace(assignees=["existing"], labels=["existing"])
+    if field == "assignee":
+        spy.returns["projects.get_members_lite"] = SimpleNamespace(
+            results=[SimpleNamespace(id=uid, role=15, is_active=True) for uid in ("existing", "a", "b")],
+            next_page_results=False,
+        )
     key = "add_user_id" if field == "assignee" else "add_label_id"
     registered["workitem"].fn(**{"action": f"manage_{field}", "project_id": "p", "workitem_id": "w", key: '["a", "b"]'})
 
