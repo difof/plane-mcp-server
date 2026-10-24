@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastmcp import FastMCP
+from plane.errors.errors import HttpError
 from plane.models.intake import CreateIntakeWorkItem, IntakeWorkItem, UpdateIntakeWorkItem
 from plane.models.query_params import PaginatedQueryParams, RetrieveQueryParams
 from plane.models.work_items import WorkItemForIntakeRequest
@@ -128,14 +129,20 @@ def register(mcp: FastMCP) -> None:
                 source=opt(source),
                 source_email=opt(source_email),
             )
-            # Triage fields go through the status endpoint; source metadata alone does not.
+            # Older self-hosted Plane exposes PATCH on the intake item itself,
+            # but not the dedicated /status endpoint. Only retry a proven 404:
+            # other failures may indicate that the first write took effect.
             if status is not None or snoozed_till or duplicate_to:
-                return client.intake.update_status(
-                    workspace_slug=workspace_slug,
-                    project_id=project_id,
-                    work_item_id=workitem_id,
-                    data=data,
-                )
+                try:
+                    return client.intake.update_status(
+                        workspace_slug=workspace_slug,
+                        project_id=project_id,
+                        work_item_id=workitem_id,
+                        data=data,
+                    )
+                except HttpError as exc:
+                    if exc.status_code != 404:
+                        raise
             return client.intake.update(
                 workspace_slug=workspace_slug,
                 project_id=project_id,
