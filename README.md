@@ -36,6 +36,27 @@ Add this to your MCP client's configuration:
 
 For a self-hosted Plane, add `"PLANE_BASE_URL": "https://plane.example.com"`.
 
+### Self-hosted compatibility in the difof fork
+
+Run this fork directly (using the same Plane environment variables above):
+
+```bash
+uvx --from git+https://github.com/difof/plane-mcp-server plane-mcp-server stdio
+```
+
+- Expanded work-item estimates remain readable even when `plane-sdk` expects an
+  ID string. `estimate_point` is the ID, and `estimate_point_expanded` preserves
+  the API's original object, including its label and sort key.
+- If an older Plane instance returns 404 for the public estimates endpoints,
+  `project_estimate retrieve` reports the active estimate ID from the project.
+  `list_points` discovers **used** values from up to 500 work items and returns
+  `complete: false`; **unused choices are not discoverable** without the API.
+- Type-scoped work-item property retrieve, update, and delete calls use the
+  keyword expected by the pinned Python SDK.
+
+These are compatibility behaviors, not replacements for upgrading a Plane server
+whose public REST API does not expose a feature.
+
 ## Transports
 
 ### stdio — local
