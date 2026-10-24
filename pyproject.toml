@@ -43,6 +43,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["plane_mcp*"]
 
+[tool.setuptools.package-data]
+plane_mcp = ["api_catalog.json"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
