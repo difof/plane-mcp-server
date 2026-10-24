@@ -81,9 +81,9 @@ Coercion runs before validation so an argument is judged by the value it repairs
 
 ### Tools (`tools/`)
 
-One action-dispatch tool per Plane resource: **30 tools, 207 actions, ~67k chars advertised**. `tools/__init__.py` re-exports `register_tools`, so `server.py` and `__main__.py` see a single entry point.
+One action-dispatch tool per Plane resource: **31 tools, 210 named actions, plus 776 documented REST routes**. `tools/__init__.py` re-exports `register_tools`, so `server.py` and `__main__.py` see a single entry point.
 
-One module per resource, each exporting `NAME`, `ACTIONS`, `LEGACY` and `register(mcp)`. `ACTIONS` is the single source of truth: the tool description and its `ToolAnnotations` are generated from it, and the conformance suite asserts they agree with the function signature. See `tools/README.md` for the full convention.
+One module per resource, plus `api` for documented v1/v2 REST route discovery and fallback. See `docs/API_COVERAGE.md`. Each module exports `NAME`, `ACTIONS`, `LEGACY` and `register(mcp)`. `ACTIONS` is the single source of truth: the tool description and its `ToolAnnotations` are generated from it, and the conformance suite asserts they agree with the function signature. See `tools/README.md` for the full convention.
 
 `tools/` contains resource modules plus `registry.py` (the `RESOURCES` tuple and alias tables) and `legacy.py` (retired-name resolution). Shared helpers live in `plane_mcp/toolkit/`, not here — see below.
 
