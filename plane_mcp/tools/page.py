@@ -17,15 +17,20 @@ from plane.models.work_item_pages import CreateWorkItemPage, WorkItemPage
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.toolkit import Action, as_params, build_annotations, build_description, envelope, missing, needs, opt
+from plane_mcp.tools.page_v2 import run as run_v2
 
 NAME = "page"
 TITLE = "Pages"
 
 ACTIONS = (
     Action(
-        "list", (), ("project_id", "cursor", "per_page"), note="workspace pages unless project_id is given", read=True
+        "list",
+        (),
+        ("project_id", "cursor", "per_page", "api_version"),
+        note="workspace pages unless project_id is given",
+        read=True,
     ),
-    Action("retrieve", ("page_id",), ("project_id",), read=True),
+    Action("retrieve", ("page_id",), ("project_id", "api_version"), read=True),
     Action(
         "create",
         ("name", "description_html"),
@@ -38,6 +43,7 @@ ACTIONS = (
             "is_locked",
             "external_source",
             "external_id",
+            "api_version",
         ),
         note="parent_id nests the new page under an existing one; collection_id files it. "
         "Pass one or the other, never both",
@@ -45,34 +51,36 @@ ACTIONS = (
     Action(
         "update",
         ("page_id",),
-        ("project_id", "name", "description_html"),
+        ("project_id", "name", "description_html", "api_version"),
         note="pass name, description_html, or both; description_html replaces the whole body, "
         "so retrieve the page first when editing part of it; a locked or archived page is refused",
     ),
     Action(
         "archive",
         ("page_id",),
-        ("project_id", "archive"),
+        ("project_id", "archive", "api_version"),
         note="archive defaults to true; pass archive=false to restore",
     ),
     Action(
         "delete",
         ("page_id",),
-        ("project_id",),
+        ("project_id", "api_version"),
         note="requires the page to be archived first",
         destructive=True,
     ),
     Action(
         "set_collection",
         ("page_id", "collection_id"),
+        ("api_version",),
         note="files a page into a collection, or moves it out of the one it is in; workspace pages only, "
         "and collection_id comes from the collection tool",
     ),
-    Action("list_workitem_pages", ("project_id", "workitem_id"), read=True),
-    Action("attach_to_workitem", ("project_id", "workitem_id", "page_id")),
+    Action("list_workitem_pages", ("project_id", "workitem_id"), ("api_version",), read=True),
+    Action("attach_to_workitem", ("project_id", "workitem_id", "page_id"), ("api_version",)),
     Action(
         "detach_from_workitem",
         ("project_id", "workitem_id", "workitem_page_id"),
+        ("api_version",),
         note="workitem_page_id is the link id from list_workitem_pages, not the page id",
         destructive=True,
     ),
@@ -86,7 +94,9 @@ FOOTER = (
     "nothing can reparent it afterwards. list and retrieve both report a page's parent_id and the "
     "collection_id it is filed in, so neither needs looking up. "
     "Collections themselves live in the collection tool; here, create files a new page into one and "
-    "set_collection files or moves an existing page."
+    "set_collection files or moves an existing page. "
+    "api_version=v1 (default) uses the SDK; api_version=v2 uses current REST routes, PATCH updates and POST unarchive. "
+    "v2 returns an {ok,status,data} response including its own pagination envelope; errors are not hidden."
 )
 
 LEGACY = {
@@ -135,8 +145,32 @@ def register(mcp: FastMCP) -> None:
         external_id: str = "",
         cursor: str = "",
         per_page: int = 0,
+        api_version: Literal["v1", "v2"] = "v1",
     ) -> Page | WorkItemPage | list[WorkItemPage] | dict[str, Any] | str | None:
         client, workspace_slug = get_plane_client_context()
+
+        if api_version == "v2":
+            return run_v2(
+                client,
+                workspace_slug,
+                action,
+                project_id=project_id,
+                page_id=page_id,
+                workitem_id=workitem_id,
+                workitem_page_id=workitem_page_id,
+                collection_id=collection_id,
+                parent_id=parent_id,
+                name=name,
+                description_html=description_html,
+                access=access,
+                color=color,
+                is_locked=is_locked,
+                external_source=external_source,
+                external_id=external_id,
+                archive=archive,
+                cursor=cursor,
+                per_page=per_page,
+            )
 
         if action == "list":
             params = as_params(PaginatedQueryParams, cursor=cursor, per_page=per_page)
