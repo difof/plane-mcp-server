@@ -49,3 +49,12 @@ The MCP's route catalogue can be refreshed with
 `python scripts/update_api_catalog.py --v1-docs PATH` from the repository.
 Upgrading the MCP does not upgrade the Plane application itself or create
 missing server-side endpoints.
+
+## Hosted OAuth token store
+
+For Redis-backed OAuth, configure `PLANE_OAUTH_STORE_ENCRYPTION_KEYS` with
+stable Fernet key material. The MCP refuses hosted persistent-token startup
+without it rather than storing refresh tokens unencrypted in Redis. Use a
+comma-separated key list for rotation (current first, old keys after).
+Never print keys or embed them in skill/repo files. Local stdio API-key MCP
+is unaffected.
