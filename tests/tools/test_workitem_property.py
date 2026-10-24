@@ -194,3 +194,15 @@ def test_a_rich_text_value_reads_back_with_its_html(registered, spy):
     result = registered["workitem_property"].fn(action="get_value", project_id="p", workitem_id="w", property_id="pr")
 
     assert result.value_detail.description_html == "<p>Notes</p>"
+
+
+@pytest.mark.parametrize("action", ["retrieve", "update", "delete"])
+def test_type_scoped_property_uses_sdk_keyword_not_mcp_field_name(action, registered, spy):
+    """The public MCP field differs from the type-scoped plane-sdk parameter."""
+    registered["workitem_property"].fn(
+        action=action, project_id="project", workitem_type_id="type", workitem_property_id="property"
+    )
+    call = spy.recorder.only()
+    assert call.method == f"work_item_properties.{action}"
+    assert call.kwargs["work_item_property_id"] == "property"
+    assert call.kwargs["type_id"] == "type"
