@@ -11,6 +11,8 @@ Built on [FastMCP](https://github.com/jlowin/fastmcp) and the official
 - **Local or remote** — stdio, streamable HTTP, SSE
 - **OAuth or API key** authentication
 
+Fork build: `0.3.5.post1` (upstream base `0.3.5`).
+
 ## Quick start
 
 Get an API key from Plane: **Workspace Settings → API tokens**.
@@ -53,6 +55,13 @@ api(action="request", method="GET", path="/api/v2/workspaces/<slug>/pages/")
 page links through `api_version="v2"`; the default remains v1 for compatibility.
 Plane's own permissions and self-hosted API availability still apply. See
 [REST API coverage and limitations](docs/API_COVERAGE.md).
+
+For **Plane Community v1.4.2** (including servers whose UI Pages work but public
+`/api/v1/.../pages/` returns 404), the fork also ships an
+[optional, separate AGPL-licensed backend patch](compat/plane-v1.4.2/README.md).
+It must be applied to the actual Plane backend to expose public **project** Pages;
+installing this MCP alone cannot register server-side routes. No live server is
+automatically changed by installing the patch or MCP.
 
 ### Self-hosted compatibility in the difof fork
 
@@ -223,6 +232,7 @@ Self-hosting the server itself:
 | Variable | Purpose |
 |---|---|
 | `PLANE_INTERNAL_BASE_URL` | Internal URL for server-to-server calls, preferred over `PLANE_BASE_URL` |
+| `PLANE_OAUTH_STORE_ENCRYPTION_KEYS` | **Required for Redis-backed OAuth:** comma-separated persistent Fernet keys (current first); missing keys refuse startup rather than storing refresh tokens in plaintext |
 | `REDIS_URL` | OAuth token storage as one connection URL (`redis://` or `rediss://` for TLS); wins over host/port |
 | `REDIS_HOST` / `REDIS_PORT` | OAuth token storage; falls back to in-memory |
 | `PLANE_OAUTH_PROVIDER_*` | OAuth client credentials and base URL |
