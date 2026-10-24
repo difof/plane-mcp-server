@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from fastmcp import FastMCP
 from plane.models.enums import TimezoneEnum
@@ -19,6 +19,7 @@ from plane.models.query_params import ProjectLiteListQueryParams
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.toolkit import Action, build_annotations, build_description, missing, needs, opt, plan_gated, rich_text
+from plane_mcp.tools.project_features_compat import read_features, update_features
 
 NAME = "project"
 TITLE = "Projects"
@@ -176,6 +177,7 @@ def register(mcp: FastMCP) -> None:
         | PaginatedProjectLiteResponse
         | PaginatedProjectMemberResponse
         | ProjectFeature
+        | dict[str, Any]
         | list[ProjectWorklogSummary]
         | str
         | None
@@ -280,12 +282,13 @@ def register(mcp: FastMCP) -> None:
             return client.projects.get_worklog_summary(workspace_slug=workspace_slug, project_id=project_id)
 
         if action == "get_features":
-            return client.projects.get_features(workspace_slug=workspace_slug, project_id=project_id)
+            return read_features(client, workspace_slug, project_id)
 
-        return client.projects.update_features(
-            workspace_slug=workspace_slug,
-            project_id=project_id,
-            data=ProjectFeature(
+        return update_features(
+            client,
+            workspace_slug,
+            project_id,
+            ProjectFeature(
                 modules=modules,
                 cycles=cycles,
                 views=views,
