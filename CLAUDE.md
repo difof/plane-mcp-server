@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Agent skill
+
+The repo-owned Plane agent skill lives in `.agents/skills/plane/SKILL.md` with focused
+references. Keep it aligned when resource actions or API coverage change;
+install by linking that directory into `~/.config/opencode/skills/plane`.
+
 ## Project Overview
 
 Plane MCP Server — a Python-based Model Context Protocol server that exposes Plane's project management API as MCP tools. Built on FastMCP with the official `plane-sdk`. Supports three transport modes: stdio (local), HTTP (with OAuth or header auth), and SSE (legacy).
