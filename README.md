@@ -7,7 +7,7 @@ work items, cycles, modules, releases, customers and more.
 Built on [FastMCP](https://github.com/jlowin/fastmcp) and the official
 [`plane-sdk`](https://pypi.org/project/plane-sdk/).
 
-- **30 tools**, one per Plane resource, covering 207 operations
+- **31 tools**, covering 210 operations, plus a searchable REST gateway for **776 documented v1/v2 routes**
 - **Local or remote** — stdio, streamable HTTP, SSE
 - **OAuth or API key** authentication
 
@@ -35,6 +35,24 @@ Add this to your MCP client's configuration:
 `uvx` needs no install step. Requires Python 3.10+.
 
 For a self-hosted Plane, add `"PLANE_BASE_URL": "https://plane.example.com"`.
+
+### Complete REST coverage and Pages (fork)
+
+The typed Plane tools don't expose every operation in the newer v2 API. This fork
+adds an `api` tool to search the **231 v1 and 545 v2 documented HTTP routes** and
+call any v1/v2 path available on your configured Plane server with the current
+workspace's credentials. It supports JSON, multipart uploads, and binary downloads.
+
+```text
+api(action="list", version="v2", query="pages")
+page(action="list", api_version="v2")
+api(action="request", method="GET", path="/api/v2/workspaces/<slug>/pages/")
+```
+
+`page` supports v2 CRUD, archive/restore, collection placement and work-item
+page links through `api_version="v2"`; the default remains v1 for compatibility.
+Plane's own permissions and self-hosted API availability still apply. See
+[REST API coverage and limitations](docs/API_COVERAGE.md).
 
 ### Self-hosted compatibility in the difof fork
 
