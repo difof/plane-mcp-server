@@ -15,8 +15,10 @@ from typing import Any
 import boto3
 import pytest
 from botocore.stub import Stubber
+from cryptography.fernet import Fernet
 from key_value.aio.stores.memory import MemoryStore
 from key_value.aio.stores.redis import RedisStore
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
 from plane_mcp import aws_secrets, storage
 from plane_mcp.aws_secrets import ElastiCacheCredentialProvider, get_secret
@@ -45,6 +47,7 @@ def _reset_state(monkeypatch):
     """Per-test isolation: clear the secret cache and unset Redis/AWS env vars."""
     aws_secrets._SECRET_CACHE.clear()
 
+    monkeypatch.setenv("PLANE_OAUTH_STORE_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     for k in (
         "REDIS_URL",
         "REDIS_HOST",
@@ -264,13 +267,13 @@ def test_build_token_store_host_port_only_returns_redis(monkeypatch, no_ping):
     monkeypatch.setenv("REDIS_HOST", "localhost")
     monkeypatch.setenv("REDIS_PORT", "6379")
     _forbid_boto3_secretsmanager(monkeypatch)
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
 
 
 def test_build_token_store_url_returns_redis(monkeypatch, no_ping):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     _forbid_boto3_secretsmanager(monkeypatch)
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
 
 
 def test_build_token_store_url_wins_over_host_port(monkeypatch, no_ping, capture_log):
@@ -281,8 +284,8 @@ def test_build_token_store_url_wins_over_host_port(monkeypatch, no_ping, capture
 
     store = build_token_store()
 
-    assert isinstance(store, RedisStore)
-    kwargs = store._client.connection_pool.connection_kwargs
+    assert isinstance(store, FernetEncryptionWrapper)
+    kwargs = store.key_value._client.connection_pool.connection_kwargs
     assert kwargs["host"] == "url-host"
     assert kwargs["port"] == 6390
     assert kwargs["db"] == 2
@@ -296,28 +299,28 @@ def test_build_token_store_url_wins_over_arn(monkeypatch, no_ping, capture_log):
     monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/test")
     _forbid_boto3_secretsmanager(monkeypatch)
 
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
     assert any("Secrets Manager ignored" in rec.message for rec in caplog.records)
 
 
 def test_build_token_store_rediss_url_enables_tls(monkeypatch, no_ping):
     monkeypatch.setenv("REDIS_URL", "rediss://:pw@localhost:6379/0")
     store = build_token_store()
-    assert store._client.connection_pool.connection_class.__name__ == "SSLConnection"
+    assert store.key_value._client.connection_pool.connection_class.__name__ == "SSLConnection"
 
 
 def test_build_token_store_url_password_env_fills_gap(monkeypatch, no_ping):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("REDIS_PASSWORD", "env-pw")
     store = build_token_store()
-    assert store._client.connection_pool.connection_kwargs["password"] == "env-pw"
+    assert store.key_value._client.connection_pool.connection_kwargs["password"] == "env-pw"
 
 
 def test_build_token_store_url_own_password_beats_env(monkeypatch, no_ping):
     monkeypatch.setenv("REDIS_URL", "redis://:url-pw@localhost:6379/0")
     monkeypatch.setenv("REDIS_PASSWORD", "env-pw")
     store = build_token_store()
-    assert store._client.connection_pool.connection_kwargs["password"] == "url-pw"
+    assert store.key_value._client.connection_pool.connection_kwargs["password"] == "url-pw"
 
 
 def test_redact_url_hides_password():
@@ -335,7 +338,7 @@ def test_build_token_store_password_wins_over_arn(monkeypatch, no_ping, capture_
     monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/test")
     _forbid_boto3_secretsmanager(monkeypatch)
 
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
     assert any("static password wins" in rec.message for rec in caplog.records), (
         "Expected a warning when both REDIS_PASSWORD and ELASTICACHE_SECRET_ARN are set"
     )
@@ -363,7 +366,7 @@ def test_build_token_store_arn_without_irsa_skips_sm(monkeypatch, capture_log, n
 
     store = build_token_store()
 
-    assert isinstance(store, RedisStore)
+    assert isinstance(store, FernetEncryptionWrapper)
     assert any("IRSA / Pod Identity" in rec.message for rec in caplog.records)
 
 
@@ -373,7 +376,7 @@ def test_build_token_store_arn_with_aws_role_arn_activates_sm(monkeypatch, no_pi
     monkeypatch.setenv("REDIS_PORT", "6379")
     monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/test")
     stubber = _stub_secrets(monkeypatch, [{"authToken": "secret-pw"}])
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
     stubber.assert_no_pending_responses()
 
 
@@ -383,7 +386,7 @@ def test_build_token_store_arn_with_pod_identity_activates_sm(monkeypatch, no_pi
     monkeypatch.setenv("REDIS_PORT", "6379")
     monkeypatch.setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials")
     stubber = _stub_secrets(monkeypatch, [{"authToken": "secret-pw"}])
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
     stubber.assert_no_pending_responses()
 
 
@@ -404,7 +407,7 @@ def test_build_token_store_custom_token_key(monkeypatch, no_ping):
     monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/test")
     monkeypatch.setenv("REDIS_AUTH_TOKEN_KEY", "token")
     _stub_secrets(monkeypatch, [{"token": "secret-pw"}])
-    assert isinstance(build_token_store(), RedisStore)
+    assert isinstance(build_token_store(), FernetEncryptionWrapper)
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +552,7 @@ def test_ping_redis_passes_through_credentials_and_ssl(monkeypatch):
 
 
 def _connection_class(store: RedisStore) -> str:
-    return store._client.connection_pool.connection_class.__name__
+    return store.key_value._client.connection_pool.connection_class.__name__
 
 
 def test_build_token_store_password_path_ssl_applies_to_store(monkeypatch, no_ping):
@@ -559,7 +562,7 @@ def test_build_token_store_password_path_ssl_applies_to_store(monkeypatch, no_pi
     monkeypatch.setenv("REDIS_SSL", "true")
     store = build_token_store()
     assert _connection_class(store) == "SSLConnection"
-    assert store._client.connection_pool.connection_kwargs["password"] == "pw"
+    assert store.key_value._client.connection_pool.connection_kwargs["password"] == "pw"
 
 
 def test_build_token_store_password_path_defaults_plaintext(monkeypatch, no_ping):
