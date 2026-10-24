@@ -70,3 +70,12 @@ from its name alone.** Only use a write after the user authorized the effect.
 
 The fork's published coverage snapshot, refresh instructions, and caveats are at
 `docs/API_COVERAGE.md` in the same repository.
+
+## Self-hosted Plane v1.4.2 server patch
+
+The MCP repository contains `compat/plane-v1.4.2/public-project-pages.patch`
+(AGPL-3.0-only from upstream Plane PR #9528). This **server-side** patch adds
+public API-key project page routes while preserving permissions. The patch is
+not applied by installing the MCP. The route remains a real 404 until a
+backend administrator verifies and deploys it; workspace pages/collections
+are still unsupported. Never use session cookies to impersonate the UI.
